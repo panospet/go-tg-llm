@@ -1,7 +1,7 @@
 services:
   api:
     container_name: go-telegram-bot
-    image: ${REGISTRY_URL}/telegram-perplexity-bot:latest
+    image: ${REGISTRY_URL}/telegram-llm-bot:latest
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       PERPLEXITY_API_KEY: ${PERPLEXITY_API_KEY}
