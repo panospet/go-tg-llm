@@ -14,7 +14,7 @@ const (
 	// EndpointTemplate is the Google Generative Language REST endpoint.
 	// The model slug is interpolated into the URL.
 	EndpointTemplate = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
-	DefaultModel     = "gemini-3-flash"
+	DefaultModel     = "gemini-2.5-flash"
 )
 
 // Service is a Gemini-backed implementation of llm.LLM.
