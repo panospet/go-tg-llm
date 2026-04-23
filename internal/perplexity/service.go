@@ -5,21 +5,32 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
+
+	"go-tg-llm/internal/llm"
 )
 
-const Endpoint = "https://api.perplexity.ai/chat/completions"
+const (
+	Endpoint     = "https://api.perplexity.ai/chat/completions"
+	DefaultModel = "sonar"
+)
 
+// Service is a Perplexity-backed implementation of llm.LLM.
 type Service struct {
 	apiKey string
+	model  string
+	client *http.Client
 }
 
-func NewService(
-	apiKey string,
-) *Service {
+// NewService constructs a Perplexity client. If model is empty, DefaultModel is used.
+func NewService(apiKey, model string) *Service {
+	if model == "" {
+		model = DefaultModel
+	}
 	return &Service{
 		apiKey: apiKey,
+		model:  model,
+		client: http.DefaultClient,
 	}
 }
 
@@ -41,17 +52,18 @@ type Response struct {
 	} `json:"choices"`
 }
 
-func (s *Service) Ask(
-	question string,
-) (string, error) {
-	reqBody, _ := json.Marshal(
+func (s *Service) Ask(question string) (string, error) {
+	reqBody, err := json.Marshal(
 		Request{
-			Model: "sonar",
+			Model: s.model,
 			Messages: []Msg{
-				{Role: "user", Content: FormatQuestionForTg(question)},
+				{Role: "user", Content: llm.FormatQuestionForTg(question)},
 			},
 		},
 	)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
 
 	req, err := http.NewRequest(
 		http.MethodPost,
@@ -64,7 +76,7 @@ func (s *Service) Ask(
 	req.Header.Set("Authorization", "Bearer "+s.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -74,11 +86,14 @@ func (s *Service) Ask(
 	if err != nil {
 		return "", err
 	}
-	log.Println(string(bodyBytes))
+	llm.LogResponse("perplexity", resp.StatusCode, bodyBytes)
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("perplexity: unexpected status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
 
 	var result Response
-	err = json.Unmarshal(bodyBytes, &result)
-	if err != nil {
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
 		return "", err
 	}
 
@@ -87,18 +102,4 @@ func (s *Service) Ask(
 	}
 
 	return "No answer received.", nil
-}
-
-var DefaultPrompt = `This is a question asked via Perplexity API which will only be displayed inside a Telegram chat.
-Thus, answer it by following these rules strictly:
-- Including all sources as a list of hyperlinks at the end of the message. If no sources were needed, then don't add anything.
-- Format it accordingly to be pretty inside the telegram chat.
-- Answer by using the language the actual question is asked.
-
-The actual question is: "%s"`
-
-func FormatQuestionForTg(
-	question string,
-) string {
-	return fmt.Sprintf(DefaultPrompt, question)
 }
