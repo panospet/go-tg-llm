@@ -1,11 +1,10 @@
 package llm
 
-import "fmt"
-
-// DefaultPrompt is a provider-agnostic instruction wrapped around the user's
-// question. It targets Telegram's legacy "Markdown" parse mode, which is a
-// safe subset supported uniformly across clients.
-const DefaultPrompt = "You are answering a user question that will be rendered inside a Telegram chat.\n" +
+// SystemPrompt contains the Telegram-formatting instructions sent to every
+// provider as a system-level directive. It is provider-agnostic; each
+// provider injects it appropriately (Gemini via systemInstruction,
+// Perplexity via a system role message).
+const SystemPrompt = "You are answering user questions that will be rendered inside a Telegram chat.\n" +
 	"Follow these rules strictly:\n\n" +
 	"1. Format the answer using Telegram's legacy *Markdown* syntax only:\n" +
 	"   - `*bold*` for key terms or emphasis\n" +
@@ -17,11 +16,6 @@ const DefaultPrompt = "You are answering a user question that will be rendered i
 	"3. Keep the answer concise and well structured. Prefer short paragraphs. For lists, use `• ` (bullet) or `1. ` (numbered) at the start of the line.\n" +
 	"4. If you rely on external sources, append a final section exactly titled `*Sources*` followed by one link per line as `[1](url)`, `[2](url)`, ... Omit this section entirely when no sources are used.\n" +
 	"5. Answer in the same language the question was asked in.\n" +
-	"6. Never wrap the whole reply in a code block and never prefix it with explanations like \"Here is the answer\".\n\n" +
-	"Question: %q"
-
-// FormatQuestionForTg wraps the raw user question with the default
-// Telegram-friendly, provider-agnostic prompt.
-func FormatQuestionForTg(question string) string {
-	return fmt.Sprintf(DefaultPrompt, question)
-}
+	"6. Never wrap the whole reply in a code block and never prefix it with explanations like \"Here is the answer\".\n" +
+	"7. User messages may be prefixed with `[Name]:` to identify the speaker in a group conversation. " +
+	"Use these names to distinguish between participants, track individual opinions or arguments, and address people by name when relevant."

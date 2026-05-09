@@ -37,7 +37,9 @@ func NewService(apiKey, model string) *Service {
 }
 
 type Request struct {
-	Contents []Content `json:"contents"`
+	// SystemInstruction is injected once and applies to the whole conversation.
+	SystemInstruction *Content `json:"system_instruction,omitempty"`
+	Contents          []Content `json:"contents"`
 }
 
 type Content struct {
@@ -62,27 +64,35 @@ type Response struct {
 	} `json:"error,omitempty"`
 }
 
-func (s *Service) Ask(question string) (string, error) {
-	reqBody, err := json.Marshal(
-		Request{
-			Contents: []Content{
-				{
-					Role:  "user",
-					Parts: []Part{{Text: llm.FormatQuestionForTg(question)}},
-				},
-			},
+// Chat sends the full conversation history to Gemini and returns the next
+// assistant turn. The Telegram formatting system prompt is injected once via
+// the systemInstruction field. Role "assistant" is mapped to "model" as
+// required by the Gemini API.
+func (s *Service) Chat(messages []llm.Message) (string, error) {
+	contents := make([]Content, 0, len(messages))
+	for _, m := range messages {
+		role := m.Role
+		if role == "assistant" {
+			role = "model"
+		}
+		contents = append(contents, Content{
+			Role:  role,
+			Parts: []Part{{Text: m.Content}},
+		})
+	}
+
+	reqBody, err := json.Marshal(Request{
+		SystemInstruction: &Content{
+			Parts: []Part{{Text: llm.SystemPrompt}},
 		},
-	)
+		Contents: contents,
+	})
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
 	url := fmt.Sprintf(EndpointTemplate, s.model)
-	req, err := http.NewRequest(
-		http.MethodPost,
-		url,
-		bytes.NewBuffer(reqBody),
-	)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(reqBody))
 	if err != nil {
 		return "", err
 	}

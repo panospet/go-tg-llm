@@ -52,24 +52,25 @@ type Response struct {
 	} `json:"choices"`
 }
 
-func (s *Service) Ask(question string) (string, error) {
-	reqBody, err := json.Marshal(
-		Request{
-			Model: s.model,
-			Messages: []Msg{
-				{Role: "user", Content: llm.FormatQuestionForTg(question)},
-			},
-		},
-	)
+// Chat sends the full conversation history to Perplexity and returns the next
+// assistant turn. The Telegram formatting system prompt is prepended as a
+// dedicated system role message before the conversation turns.
+func (s *Service) Chat(messages []llm.Message) (string, error) {
+	msgs := make([]Msg, 0, len(messages)+1)
+	msgs = append(msgs, Msg{Role: "system", Content: llm.SystemPrompt})
+	for _, m := range messages {
+		msgs = append(msgs, Msg{Role: m.Role, Content: m.Content})
+	}
+
+	reqBody, err := json.Marshal(Request{
+		Model:    s.model,
+		Messages: msgs,
+	})
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest(
-		http.MethodPost,
-		Endpoint,
-		bytes.NewBuffer(reqBody),
-	)
+	req, err := http.NewRequest(http.MethodPost, Endpoint, bytes.NewBuffer(reqBody))
 	if err != nil {
 		return "", err
 	}
