@@ -15,6 +15,11 @@ const (
 	// The model slug is interpolated into the URL.
 	EndpointTemplate = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
 	DefaultModel     = "gemini-2.5-flash"
+
+	// Pricing for gemini-2.5-flash (≤200K token context window).
+	// Source: https://ai.google.dev/pricing — verify for the latest rates.
+	priceInputPer1M  = 0.15 // USD per 1M input tokens
+	priceOutputPer1M = 0.60 // USD per 1M output tokens
 )
 
 // Service is a Gemini-backed implementation of llm.LLM.
@@ -38,7 +43,7 @@ func NewService(apiKey, model string) *Service {
 
 type Request struct {
 	// SystemInstruction is injected once and applies to the whole conversation.
-	SystemInstruction *Content `json:"system_instruction,omitempty"`
+	SystemInstruction *Content  `json:"system_instruction,omitempty"`
 	Contents          []Content `json:"contents"`
 }
 
@@ -57,6 +62,10 @@ type Response struct {
 			Parts []Part `json:"parts"`
 		} `json:"content"`
 	} `json:"candidates"`
+	UsageMetadata *struct {
+		PromptTokenCount     int `json:"promptTokenCount"`
+		CandidatesTokenCount int `json:"candidatesTokenCount"`
+	} `json:"usageMetadata,omitempty"`
 	Error *struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
@@ -65,10 +74,10 @@ type Response struct {
 }
 
 // Chat sends the full conversation history to Gemini and returns the next
-// assistant turn. The Telegram formatting system prompt is injected once via
-// the systemInstruction field. Role "assistant" is mapped to "model" as
-// required by the Gemini API.
-func (s *Service) Chat(messages []llm.Message) (string, error) {
+// assistant turn together with token usage. The Telegram formatting system
+// prompt is injected once via the systemInstruction field. Role "assistant"
+// is mapped to "model" as required by the Gemini API.
+func (s *Service) Chat(messages []llm.Message) (string, llm.Usage, error) {
 	contents := make([]Content, 0, len(messages))
 	for _, m := range messages {
 		role := m.Role
@@ -88,40 +97,48 @@ func (s *Service) Chat(messages []llm.Message) (string, error) {
 		Contents: contents,
 	})
 	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
+		return "", llm.Usage{}, fmt.Errorf("marshal request: %w", err)
 	}
 
 	url := fmt.Sprintf(EndpointTemplate, s.model)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(reqBody))
 	if err != nil {
-		return "", err
+		return "", llm.Usage{}, err
 	}
 	req.Header.Set("x-goog-api-key", s.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return "", err
+		return "", llm.Usage{}, err
 	}
 	defer resp.Body.Close()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return "", llm.Usage{}, err
 	}
 	llm.LogResponse("gemini", resp.StatusCode, bodyBytes)
 
 	var result Response
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
-		return "", err
+		return "", llm.Usage{}, err
 	}
 
 	if result.Error != nil {
-		return "", fmt.Errorf("gemini: %s (%s)", result.Error.Message, result.Error.Status)
+		return "", llm.Usage{}, fmt.Errorf("gemini: %s (%s)", result.Error.Message, result.Error.Status)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("gemini: unexpected status %d: %s", resp.StatusCode, string(bodyBytes))
+		return "", llm.Usage{}, fmt.Errorf("gemini: unexpected status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var usage llm.Usage
+	if m := result.UsageMetadata; m != nil {
+		usage.InputTokens = m.PromptTokenCount
+		usage.OutputTokens = m.CandidatesTokenCount
+		usage.CostUSD = (float64(m.PromptTokenCount)/1_000_000)*priceInputPer1M +
+			(float64(m.CandidatesTokenCount)/1_000_000)*priceOutputPer1M
 	}
 
 	if len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
@@ -129,8 +146,8 @@ func (s *Service) Chat(messages []llm.Message) (string, error) {
 		for _, p := range result.Candidates[0].Content.Parts {
 			buf.WriteString(p.Text)
 		}
-		return buf.String(), nil
+		return buf.String(), usage, nil
 	}
 
-	return "No answer received.", nil
+	return "No answer received.", usage, nil
 }

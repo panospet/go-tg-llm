@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -122,25 +123,27 @@ func main() {
 		name := senderName(update.Message.From)
 		labelledQuestion := "[" + name + "]: " + question
 
-		reply(bot, update.Message.Chat.ID, "Thinking...")
-		answer, err := llm.Ask(provider, labelledQuestion)
+		answer, usage, err := llm.Ask(provider, labelledQuestion)
 		if err != nil {
 			slog.Error("provider ask failed", "provider", providerName, "err", err)
 			reply(bot, update.Message.Chat.ID, "Error contacting provider: "+err.Error())
 			continue
 		}
 
-		botMsgID, err := sendLong(bot, update.Message.Chat.ID, answer, update.Message.MessageID)
+		// Substitute the real cost into the LLM's {{COST}} placeholder.
+		displayAnswer := injectCost(answer, usage)
+
+		botMsgID, err := sendLong(bot, update.Message.Chat.ID, displayAnswer, update.Message.MessageID)
 		if err != nil {
 			slog.Error("send answer failed", "err", err)
 			continue
 		}
 
-		// Seed the conversation store so follow-up replies work.
+		// Store the substituted answer so history is human-readable.
 		store.Save(update.Message.Chat.ID, botMsgID, &conversation.Conversation{
 			Messages: []llm.Message{
 				{Role: "user", Content: labelledQuestion},
-				{Role: "assistant", Content: answer},
+				{Role: "assistant", Content: displayAnswer},
 			},
 			Provider: providerName,
 		})
@@ -193,17 +196,17 @@ func handleContinuation(
 	copy(newMessages, conv.Messages)
 	newMessages = append(newMessages, llm.Message{Role: "user", Content: labelledText})
 
-	reply(bot, chatID, "Thinking...")
-
-	answer, err := provider.Chat(newMessages)
+	answer, usage, err := provider.Chat(newMessages)
 	if err != nil {
 		slog.Error("provider chat failed", "provider", conv.Provider, "err", err)
 		reply(bot, chatID, "Error contacting provider: "+err.Error())
 		return
 	}
 
-	// Reply threaded under the user's message so Telegram shows the chain.
-	botMsgID, err := sendLong(bot, chatID, answer, msg.MessageID)
+	// Substitute the real cost into the LLM's {{COST}} placeholder.
+	displayAnswer := injectCost(answer, usage)
+
+	botMsgID, err := sendLong(bot, chatID, displayAnswer, msg.MessageID)
 	if err != nil {
 		slog.Error("send continuation answer failed", "err", err)
 		return
@@ -211,7 +214,7 @@ func handleContinuation(
 
 	// Persist updated history under the new bot message ID.
 	updatedConv := &conversation.Conversation{
-		Messages: append(newMessages, llm.Message{Role: "assistant", Content: answer}),
+		Messages: append(newMessages, llm.Message{Role: "assistant", Content: displayAnswer}),
 		Provider: conv.Provider,
 	}
 	store.Save(chatID, botMsgID, updatedConv)
@@ -241,6 +244,18 @@ func reply(bot *tgbotapi.BotAPI, chatID int64, text string) {
 		slog.Error("send plain message failed", "chat_id", chatID, "err", err)
 	}
 }
+
+// injectCost replaces the {{COST}} placeholder that the LLM writes in its
+// roast sentence with the real dollar amount from the API usage metadata.
+// If no token data is available the placeholder is removed.
+func injectCost(answer string, u llm.Usage) string {
+	var costStr string
+	if u.InputTokens > 0 || u.OutputTokens > 0 {
+		costStr = fmt.Sprintf("$%.6f", u.CostUSD)
+	}
+	return strings.ReplaceAll(answer, "{{COST}}", costStr)
+}
+
 
 // sendLong splits the answer into chunks that fit Telegram's per-message
 // limit and sends each chunk sequentially using the legacy Markdown parse
